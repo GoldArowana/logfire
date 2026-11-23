@@ -1,0 +1,66 @@
+name: Exact SDK f-string validation
+
+on:
+  push:
+    branches:
+      - codex-validation/logfire-super-17560a9a-v3
+    paths:
+      - .github/workflows/codex-validation-super-17560a9a-v3.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SOURCE_SHA: 36ac83631bce6f2f4160136869a630333a043bc9
+      SOURCE_TREE: 192872d74d6a5244f2f98fcd41a13528e912df91
+      UV_NO_SYNC: "1"
+      PYTEST_ADDOPTS: "--inline-snapshot=disable --record-mode=none"
+      LOGFIRE_TOKEN: ""
+      LOGFIRE_API_KEY: ""
+      LOGFIRE_SEND_TO_LOGFIRE: "false"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57
+        with:
+          version: "0.11.1"
+          enable-cache: false
+      - name: Verify and prepare the proposed SDK source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$GITHUB_REPOSITORY" = GoldArowana/logfire
+          event_commit=$(git rev-parse HEAD)
+          test "$event_commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
+          test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = .github/workflows/codex-validation-super-17560a9a-v3.yml
+          git worktree add --detach "$RUNNER_TEMP/logfire-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/logfire-source"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git log -1 --format='%H %T'
+          uv sync --frozen --python 3.12
+          uv run --no-sync python --version
+      - name: Lint and type check
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/logfire-source"
+          make lint
+          make typecheck
+      - name: Run exact formatter regressions and SDK test suite
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/logfire-source"
+          uv run --no-sync pytest tests/test_formatter.py --inline-snapshot=disable --record-mode=none
+          make test
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
