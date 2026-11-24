@@ -1,0 +1,85 @@
+name: Exact Logfire PR 2878 safe formatter fallback validation
+
+on:
+  push:
+    branches:
+      - codex-validation/logfire-2878-2cb56db8-redaction
+    paths:
+      - .github/workflows/codex-validation-logfire-2878-2cb56db8-redaction.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12.13", "3.14.4"]
+    env:
+      SOURCE_SHA: 6502120bec4da487d0c950757edb38c649688196
+      SOURCE_TREE: ec54e0c610d2e73abd096826d335b19d7a0a1a1c
+      PYTHON_VERSION: ${{ matrix.python }}
+      UV_NO_SYNC: "1"
+      PYTEST_ADDOPTS: "--inline-snapshot=disable --record-mode=none"
+      LOGFIRE_TOKEN: ""
+      LOGFIRE_API_KEY: ""
+      LOGFIRE_SEND_TO_LOGFIRE: "false"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57
+        with:
+          version: "0.11.1"
+          enable-cache: false
+      - name: Ensure requests to production domains fail
+        run: |
+          echo "203.0.113.0 logfire.dev" | sudo tee -a /etc/hosts
+          echo "203.0.113.0 logfire-api.pydantic.dev" | sudo tee -a /etc/hosts
+          echo "203.0.113.0 logfire.pydantic.dev" | sudo tee -a /etc/hosts
+      - name: Verify and prepare the proposed SDK source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$GITHUB_REPOSITORY" = GoldArowana/logfire
+          event_commit=$(git rev-parse HEAD)
+          test "$event_commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_SHA"
+          test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
+          test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = .github/workflows/codex-validation-logfire-2878-2cb56db8-redaction.yml
+          git worktree add --detach "$RUNNER_TEMP/logfire-source" "$SOURCE_SHA"
+          cd "$RUNNER_TEMP/logfire-source"
+          git diff HEAD --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git log -1 --format='%H %T'
+          uv sync --frozen --python "$PYTHON_VERSION"
+          uv run --no-sync python --version
+      - name: Lint and type check
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/logfire-source"
+          make lint
+          make typecheck
+      - name: Run exact formatter regressions and SDK test suite
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/logfire-source"
+          uv run --no-sync pytest tests/test_no_production.py --inline-snapshot=disable --record-mode=none
+          uv run --no-sync pytest tests/test_formatter.py --inline-snapshot=disable --record-mode=none
+          make test
+      - name: Verify source remained unchanged
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/logfire-source"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          git diff HEAD --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
